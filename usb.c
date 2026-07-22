@@ -1,8 +1,9 @@
 //*****************************************************************************
-//	USB Protocol Functions - AVR_DU series
+//	USB Protocol Functions - AVR_DU series - CDC Comm Port version
 //
 //	Author: Richard
 //	Date:	2026-04-13
+//	Update:	2026-07-21 to include CDC functions
 //
 //*****************************************************************************
 #include "config.h"			// F_CPU
@@ -18,15 +19,25 @@
 #include "led.h"			// LED functions
 #include "descriptor_cdc.h"
 
+#define CDC_BAUD_RATE		115200
+
 //	Endpoint Table - must be word aligned (datasheet 27.5.7)
 Usb_Endpoint_Table_t endpointTable __attribute__((aligned(2)));
 
 //	Endpoint buffers
 Usb_SetupPacket_t setupPacket;	// EP0.OUT 8 byte Setup packet
-uint8_t controlPacket[64];		// EP0.IN/OUT Control packet
-uint8_t ep1InPacket[8];			// EP1.IN packet - NOTIFICATION
-uint8_t ep2InPacket[64];		// EP2.IN packet - data
-uint8_t ep2OutPacket[64];		// EP2.OUT packet - data
+uint8_t controlPacket[64];		// EP0.IN/OUT Control packet (Datasheet 27.7.7)
+uint8_t ep1InPacket[8];			// EP1.IN packet - Notification packet
+uint8_t ep2InPacket[64];		// EP2.IN packet - Data from Device -> Host
+uint8_t ep2OutPacket[64];		// EP2.OUT packet - Data from Host ->  Device
+
+// CDC Get_Line_Coding parameters
+USB_CDC_LineCoding_t lineCoding = {
+	.dwDTERate   = CDC_BAUD_RATE,
+	.bCharFormat = 0,		// 0=1
+	.bParityType = 0,		// 0=none
+	.bDataBits   = 8		// number of bits
+};
 
 // Variables
 volatile bool usbStateConfigured = false;
@@ -40,7 +51,7 @@ void usbInit(void)
 	// Enable internal 3.3 V regulator
 	SYSCFG.VUSBCTRL = SYSCFG_USBVREG_bm;
 	
-	// Enable USB to request PLL, set the maximum endpoint address
+	// Enable USB and set the maximum endpoint address
 	USB0.CTRLA = USB_ENABLE_bm | EP_MAX_ADDR;
 
 	// Wait for PLL lock
@@ -174,6 +185,8 @@ ISR(USB0_TRNCOMPL_vect)
 		
 		// Clear Setup before decoding request (Datasheet 27.7.2)
 		usbClearSetup();
+		
+		// Decode and process Setup request
 		usbHandleSetupRequest();
 	}
 	
@@ -187,35 +200,38 @@ ISR(USB0_TRNCOMPL_vect)
 		{	
 			// Clear interrupt flag
 			usbClearInTransaction(EP1);
+			
+			printf("Notification...\n");
+			
+			// Populate Notification buffer (see CDC specs) to notify pin state changes and ACK.
+			
+			//usbAckIn(EP1);
 		}
 		
-		// Device to Host packet EP2.IN
+		// Device to Host EP2.IN packet
 		if (endpointTable.EP[EP2].IN.STATUS & USB_TRNCOMPL_bm)
 		{
 			usbClearInTransaction(EP2);		
 			
-			if (usbDataReady == true)
-			{
-				usbDataReady = false;
-				
-				ep2InPacket[0] = ep2OutPacket[0];
-				endpointTable.EP[EP2].IN.CNT = 1;
-				
-				printf("EP2.IN=%02x\n", ep2InPacket[0]);
-			}
-
+			// Arm endpoint
 			usbAckIn(EP2);
+			
+			// Clear bytes to send
+			endpointTable.EP[EP2].IN.CNT = 0;			
 		}		
 		
-		// Host to Device packet EP2.OUT
+		// Host to Device EP2.OUT packet
 		if (endpointTable.EP[EP2].OUT.STATUS & USB_TRNCOMPL_bm)
 		{	
 			usbClearOutTransaction(EP2);
 			
-			printf("EP2.OUT=%02x\n", ep2OutPacket[0]);
+			// Echo character typed on serial terminal			
+			ep2InPacket[0] = ep2OutPacket[0];
 			
-			usbDataReady = true;
+			// Number of bytes to echo
+			endpointTable.EP[EP2].IN.CNT = 1;
 			
+			// Arm endpoint
 			usbAckOut(EP2);
 		}	
 	}
@@ -229,7 +245,7 @@ void usbHandleSetupRequest(void)
 	// Debug - print Setup Packet
 	printf("%02x %02x %04x %04x %04x\n", setupPacket.bmRequestType, setupPacket.bRequest, setupPacket.wValue, setupPacket.wIndex, setupPacket.wLength);
 	
-	switch (setupPacket.bmRequestType & BM_REQUEST_TYPE_MASK) // Type is bits 5 & 6
+	switch (setupPacket.bmRequestType & BM_REQUEST_TYPE_MASK) // Only look at bits 5 & 6
 	{
 		case Device_Standard:
 			switch (setupPacket.bRequest)
@@ -251,22 +267,22 @@ void usbHandleSetupRequest(void)
 			break;
 		case Device_Class:
 			switch (setupPacket.bRequest)
-			{
-				case Hid_GetReport:
-					usbHidGetReport();
+			{	
+				case CDC_SetLineCoding:
+					usbSetLineCoding();
 					break;
-				case Hid_SetReport:
-					usbHidSetReport();
+				case CDC_GetLineCoding:
+					usbGetLineCoding();
 					break;
-				case Hid_SetIdle:
-					usbHidSetIdle();
+				case CDC_SetControlLineState:
+					usbSetControlLineState();
 					break;
 				default:
-					// Unsupported Class_Request (bRequest)
+					// Unsupported Device_Request (bRequest)
 					usbEnableStallRequest();
 					break;
 			}
-			break;					
+			break;
 		default:
 			// Unsupported Request_Type (bmRequestType)
 			usbEnableStallRequest();
@@ -328,7 +344,7 @@ void usbGetStringDescriptor(void)
 //*****************************************************************************
 void usbSendDescriptor(const void *descriptor, uint16_t descriptorLength)
 {
-	// Data Stage
+	// Data Stage:
 	
 	// Host may request more or less bytes than the full descriptor
 	uint16_t length = (setupPacket.wLength < descriptorLength) ? setupPacket.wLength : descriptorLength;
@@ -392,81 +408,64 @@ void usbSetConfiguration(void)
 }
 
 //*****************************************************************************
-//	Clear Feature (bRequest = 0x01) Host -> Device
+//	Set Control Line State (bRequest = 0x22) Host -> Device
 //*****************************************************************************
-void usbClearFeature(void)
+void usbSetControlLineState(void)
 {
-	// No Data Stage
-
-	// Status Stage: reply with a ZLP
+	// wValue has DTR/RTS bits:
+	// uint16_t value = usbSetupPacket.wValue;
+	// lineStateDTR = (value & 0x0001) != 0;
+	// lineStateRTS = (value & 0x0002) != 0;
+	
+	// Respond with ZLP
 	endpointTable.EP[EP0].IN.CNT = 0;
 	endpointTable.EP[EP0].IN.MCNT = 0;
-
-	// Ack Status IN Stage
+	
+	// Ack Status Stage
 	usbAckIn(EP0);
 	usbWaitInTransactionComplete(EP0);
 }
 
 //*****************************************************************************
-//	Hid Get Report (bRequest = 0x01) Device -> Host
+//	Get Line Coding (bRequest = 0x21) Device -> Host
 //*****************************************************************************
-void usbHidGetReport(void)
+void usbGetLineCoding(void)
 {
-	// Data Stage 
+	// Copy Line Coding descriptor (7 bytes) to the EP0 buffer
+	memcpy(controlPacket, &lineCoding, 7);	
 	
-	controlPacket[0] = 0x01;
-	controlPacket[1] = 0x02;
-	
-	printf("GetReport Tx=%02x %02x\n", controlPacket[0], controlPacket[1]);
-
-	endpointTable.EP[EP0].IN.CNT = 2;
+	// Set packet length
+	endpointTable.EP[EP0].IN.CNT = 7;
 	endpointTable.EP[EP0].IN.MCNT = 0;
-
+	
 	// Ack Data IN Stage
 	usbAckIn(EP0);
 	usbWaitInTransactionComplete(EP0);
-
+	
 	// Ack Status OUT Stage
 	usbAckOut(EP0);
-	usbWaitOutTransactionComplete(EP0);
+	usbWaitOutTransactionComplete(EP0);	
 }
 
 //*****************************************************************************
-//	Hid Set Report (bRequest = 0x09) Host -> Device
+//	Set Line Coding (bRequest = 0x20) Host -> Device
 //*****************************************************************************
-void usbHidSetReport(void)
+void usbSetLineCoding(void)
 {
-	// Ack Data OUT Stage
-	usbAckOut(EP0);
-	usbWaitOutTransactionComplete(EP0);
-		
-	// For EP0 Reports, the IN endpoint is used for both IN and OUT transactions.
-	printf("SetReport Rx=%02x %02x\n", controlPacket[0], controlPacket[1]);
+    // Data OUT stage: host sends 7 byte line coding packet
+    usbAckOut(EP0);
+    usbWaitOutTransactionComplete(EP0);
+	
+	// Copy received line coding
+	memcpy(&lineCoding, controlPacket, 7);
+
+	printf("Set Baud=%lu\n", lineCoding.dwDTERate);
 
 	// Status Stage: reply with a ZLP
 	endpointTable.EP[EP0].IN.CNT = 0;
 	endpointTable.EP[EP0].IN.MCNT = 0;
-
+	
 	// Ack Status IN Stage
 	usbAckIn(EP0);
-	usbWaitInTransactionComplete(EP0);
-}
-
-//*****************************************************************************
-//	Set Idle (bRequest = 0x0a) Host -> Device
-//*****************************************************************************
-void usbHidSetIdle(void)
-{
-	// No Data Stage
-
-	//uint8_t duration = setupPacket.wValueH;
-	//uint8_t reportId = setupPacket.wValueL;
-
-	// Status Stage: reply with a ZLP
-	endpointTable.EP[EP0].IN.CNT = 0;
-	endpointTable.EP[EP0].IN.MCNT = 0;
-
-	// Ack Status IN Stage
-	usbAckIn(EP0);
-	usbWaitInTransactionComplete(EP0);
+	usbWaitInTransactionComplete(EP0);	
 }

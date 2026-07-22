@@ -68,6 +68,8 @@ int main(void)
 	ledInit();
 	usartInit(BAUD_115200);	// Debug
 	
+	printf("AVR16DU14\n");
+	
 	usbInit();
 	
 	sei();

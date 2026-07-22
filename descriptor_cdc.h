@@ -6,7 +6,6 @@
 //	Notification Endpoint (Interrupt IN, EP1.IN)
 //	This endpoint is used by the device to send asynchronous status notifications to the host.
 //	E.g., Serial state changes (DCD, DSR, break, ring indicator, etc.)
-//	You must respond to SET_CONTROL_LINE_STATE (DTR/RTS)
 //	
 //	Bulk OUT Endpoint (EP2.OUT)
 //	The data pipe from the host to your device containing what the PC application writes 
@@ -15,8 +14,6 @@
 //	Bulk IN Endpoint (EP2.IN)
 //	The data pipe from your device to the host containing everything your firmware writes 
 //	to the virtual COM port
-//	Note: send data only when you have something to send
-//
 //
 //	Author: Richard
 //	Date:	2026-04-14
@@ -132,6 +129,17 @@ typedef struct {
 	uint8_t     bDescriptorType;	// = 0x03 (String)
 	wchar_t     bString[];			// Unicode string
 } Usb_StringDescriptor_t;
+
+//*****************************************************************************
+// CDC Control Line State struct
+//*****************************************************************************
+typedef struct
+{
+	uint32_t dwDTERate;   // baud
+	uint8_t  bCharFormat; // stop bits
+	uint8_t  bParityType; // parity
+	uint8_t  bDataBits;   // data bits
+} USB_CDC_LineCoding_t;
 
 //*****************************************************************************
 // Configuration Descriptor Assembly

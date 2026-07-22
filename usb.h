@@ -22,7 +22,7 @@
 #define EP_MAX_ADDR				2		// Maximum endpoint address number
 #define EP0						0		// Endpoint 0
 #define EP1						1		// Endpoint 1
-#define EP2						2
+#define EP2						2		// Endpoint 2
 
 // HidReport.bEndpointAddress options
 #define USB_EP_DIR_OUT			0x00
@@ -46,12 +46,12 @@ typedef enum {
 	Standard_SetConfiguration	= 0x09,
 } Usb_Standard_Request_t;
 
-// HID Device Request (bRequest)
+// CDC Device Request (bRequest)
 typedef enum {
-	Hid_GetReport				= 0x01,
-	Hid_SetReport				= 0x09,
-	Hid_SetIdle					= 0x0a
-} Usb_Hid_Request_t;
+	CDC_SetLineCoding			= 0x20,
+	CDC_GetLineCoding			= 0x21,
+	CDC_SetControlLineState		= 0x22
+} Usb_CDC_Request_t;
 
 // Descriptor Request Type (wValueH)
 typedef enum {
@@ -122,11 +122,11 @@ void usbSendDescriptor(const void *descriptor, uint16_t descriptorLength);
 void usbGetStringDescriptor(void);
 void usbSetAddress(void);
 void usbSetConfiguration(void);
-void usbClearFeature(void);
-void usbSetIdle(void);
-void usbHidGetReport(void);
-void usbHidSetReport(void);
-void usbHidSetIdle(void);
+
+void usbSetControlLineState(void);
+void usbGetLineCoding(void);
+void usbSetLineCoding(void);
+
 
 //*****************************************************************************
 //	USB Device Inline functions
